@@ -30,3 +30,5 @@
 
 from .actor_critic import ActorCritic
 from .actor_critic_recurrent import ActorCriticRecurrent
+from .multiskill_actor_critic import MultiSkillActorCritic
+from .skill_actor_critic import SkillActorCritic
