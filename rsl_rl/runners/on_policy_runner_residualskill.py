@@ -37,12 +37,12 @@ from torch.utils.tensorboard import SummaryWriter
 import torch
 
 from rsl_rl.algorithms import PPO, ResidualPPO
-from rsl_rl.modules import ActorCritic, ActorCriticRecurrent, MultiSkillActorCritic
+from rsl_rl.modules import ActorCritic, ActorCriticRecurrent, MultiSkillActorCritic, ResidualActorCritic
 from rsl_rl.env import VecEnv
 from rsl_rl.runners import OnPolicyRunner
 
 
-class MultiSkillOnPolicyRunner(OnPolicyRunner):
+class ResidualSkillOnPolicyRunner(OnPolicyRunner):
 
     def __init__(self,
                  env: VecEnv,
@@ -60,7 +60,7 @@ class MultiSkillOnPolicyRunner(OnPolicyRunner):
         else:
             num_critic_obs = self.env.num_obs
         actor_critic_class = eval(self.cfg["policy_class_name"]) # ActorCritic
-        actor_critic = actor_critic_class(len(self.cfg["skill_paths"])+1,                               #num_skills
+        actor_critic = actor_critic_class( 2,                               #num_skills
                                           self.cfg["obs_sizes"],               #obs_sizes
                                           self.cfg["actor_obs"],               #actor_obs
                                           self.cfg["critic_obs"],              #critic_obs
@@ -87,28 +87,17 @@ class MultiSkillOnPolicyRunner(OnPolicyRunner):
 
     def load_skills(self, paths, load_optimizer=False):
         for i, path in enumerate(paths):
-            print("loading from ", path)
             loaded_dict = torch.load(path)
             model_state_dict = {}
-            branches = [int(key[6]) for key in loaded_dict["model_state_dict"].keys() if "actor" in key and key[6].isdigit()]
-            if len(branches) > 0:
-                num_branches = max(branches)
             for name, params in loaded_dict["model_state_dict"].items():
                 if "actor" in name:
-                    if i > 0:
-                        # Load just the residual skills if i > 0
-                        if "actor."+str(num_branches) in name:
-                            name_ = name[8:]
-                            model_state_dict[name_] = params
-                    else:
-                        name_ = name[6:]
-                        model_state_dict[name_] = params
-                    
+                    name_ = name[6:]
+                    model_state_dict[name_] = params
             self.alg.actor_critic.actor[i].load_state_dict(model_state_dict, True)
             for parms in self.alg.actor_critic.actor[i].parameters():
                 parms.requires_grad = False
-        # weight_init= len(paths)*[1/len(paths)-0.2]+ (len(self.alg.actor_critic.actor)-len(paths))*[0.01] # this sums up to 1, but may not be necessary
-        # self.alg.actor_critic.weights.data = torch.tensor(weight_init, device=self.device)
+        weight_init= len(paths)*[1/len(paths)-0.2]+ (len(self.alg.actor_critic.actor)-len(paths))*[0.01] # this sums up to 1, but may not be necessary
+        self.alg.actor_critic.weights.data = torch.tensor(weight_init, device=self.device)
         return loaded_dict['infos']
         
 

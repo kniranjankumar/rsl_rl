@@ -180,6 +180,7 @@ class ResidualPPO:
                 # loss += self.actor_critic.residual_action_magnitude * 0.02 # this is for object pushing
                 
                 loss += self.actor_critic.residual_action_magnitude * self.residual_action_penalty_coef
+                # loss -= torch.norm(self.actor_critic.instance_weights,p=float('inf'),dim=1).mean() *0.01
                 # print(self.actor_critic.residual_action_magnitude)
                 # loss += self.actor_critic.instance_weights
                 # Gradient step

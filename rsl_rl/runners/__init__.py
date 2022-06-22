@@ -30,3 +30,4 @@
 
 from .on_policy_runner import OnPolicyRunner
 from .on_policy_runner_multiskill import MultiSkillOnPolicyRunner
+from .on_policy_runner_residualskill import ResidualSkillOnPolicyRunner

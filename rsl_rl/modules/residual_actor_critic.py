@@ -56,7 +56,7 @@ class Weights(nn.Module):
             # torch.nn.init.uniform_(m.bias)
             torch.nn.init.constant_(m.bias, 0.5)
                 
-class MultiSkillActorCritic(nn.Module):
+class ResidualActorCritic(nn.Module):
     def __init__(self,
                 num_skills: List,
                 obs_sizes: Dict[str, int],
@@ -69,13 +69,12 @@ class MultiSkillActorCritic(nn.Module):
                 activation: str = "elu",
                 init_noise_std: float = 1.0,
                 ):
-        super(MultiSkillActorCritic, self).__init__()
+        super(ResidualActorCritic, self).__init__()
         self.num_actions = num_actions
         activation = get_activation(activation)
         actor_obs_size = [self.get_obs_size(obs_sizes, actor_obs_) for actor_obs_ in actor_obs]
         critic_obs_size = [self.get_obs_size(obs_sizes, critic_obs_) for critic_obs_ in critic_obs]
         if isinstance(actor_hidden_dims[0], List):
-            print(num_skills, actor_hidden_dims, actor_obs_size)
             self.actor_branches = [Policy(actor_hidden_dims[i], actor_obs_size[i], num_actions, activation) for i in range(num_skills)]
         else:
             self.actor_branches = [Policy(actor_hidden_dims, actor_obs_size[i], num_actions, activation) for i in range(num_skills)]
