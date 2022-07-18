@@ -231,6 +231,8 @@ class MultiSkillActorCritic(nn.Module):
         # print("                     ",weights[0])
         
         combined_mean, combined_std = self.combine_skills(torch.stack(skill_means,1), self.std, torch.stack(self.num_actions*[weights], dim=-1))
+        self.distribution = Normal(combined_mean, combined_std)
+        # return self.distribution.sample()
         return combined_mean
         # return skill_outputs[-1][0]
 

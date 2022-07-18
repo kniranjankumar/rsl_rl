@@ -37,12 +37,12 @@ from torch.utils.tensorboard import SummaryWriter
 import torch
 
 from rsl_rl.algorithms import PPO, ResidualPPO
-from rsl_rl.modules import ActorCritic, ActorCriticRecurrent, MultiSkillActorCritic
+from rsl_rl.modules import *
 from rsl_rl.env import VecEnv
 from rsl_rl.runners import OnPolicyRunner
 
 
-class MultiSkillOnPolicyRunner(OnPolicyRunner):
+class MultiSkillOnPolicyRunnerv2(OnPolicyRunner):
 
     def __init__(self,
                  env: VecEnv,
@@ -64,6 +64,7 @@ class MultiSkillOnPolicyRunner(OnPolicyRunner):
                                           self.cfg["obs_sizes"],               #obs_sizes
                                           self.cfg["actor_obs"],               #actor_obs
                                           self.cfg["critic_obs"],              #critic_obs
+                                          self.cfg["meta_network_obs"],
                                           self.env.num_actions,             #num_actions
                                           **self.policy_cfg).to(self.device)
 
@@ -86,16 +87,19 @@ class MultiSkillOnPolicyRunner(OnPolicyRunner):
 
 
     def load_skills(self, paths, load_optimizer=False):
-        for i, path in enumerate(paths):
+        weight_layer_count = 0
+        
+        for skill_name, path in paths.items():
             print("loading from ", path)
             loaded_dict = torch.load(path)
             model_state_dict = {}
+            weight_net_state_dict = {}
             branches = [int(key[6]) for key in loaded_dict["model_state_dict"].keys() if "actor" in key and key[6].isdigit()]
             if len(branches) > 0:
                 num_branches = max(branches)
             for name, params in loaded_dict["model_state_dict"].items():
                 if "actor" in name:
-                    if i > 0: # should be 1 if using standing policy
+                    if skill_name != "straight_walk" and skill_name != "standing": # should be 1 if using standing policy
                         # Load just the residual skills if i > 1
                         if "actor."+str(num_branches) in name:
                             name_ = name[8:]
@@ -103,10 +107,20 @@ class MultiSkillOnPolicyRunner(OnPolicyRunner):
                     else:
                         name_ = name[6:]
                         model_state_dict[name_] = params
-                    
-            self.alg.actor_critic.actor[i].load_state_dict(model_state_dict, True)
-            for parms in self.alg.actor_critic.actor[i].parameters():
-                parms.requires_grad = False
+                elif "weights" in name:
+                        # print("loading weights", params)
+                        weight_net_state_dict[name[8:]] = params
+            if skill_name in self.alg.actor_critic.actor.keys():
+                self.alg.actor_critic.actor[skill_name].load_state_dict(model_state_dict, True)
+                for parms in self.alg.actor_critic.actor[skill_name].parameters():
+                   parms.requires_grad = False
+ 
+            if len(weight_net_state_dict.keys()) > 0:
+                self.alg.actor_critic.weights[skill_name].load_state_dict(weight_net_state_dict, True)
+                weight_layer_count += 1
+                for parms in self.alg.actor_critic.weights[skill_name].parameters():
+                    parms.requires_grad = False
+
         # weight_init= len(paths)*[1/len(paths)-0.2]+ (len(self.alg.actor_critic.actor)-len(paths))*[0.01] # this sums up to 1, but may not be necessary
         # self.alg.actor_critic.weights.data = torch.tensor(weight_init, device=self.device)
         return loaded_dict['infos']
