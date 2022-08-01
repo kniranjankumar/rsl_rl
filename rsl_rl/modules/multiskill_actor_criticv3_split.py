@@ -79,7 +79,17 @@ class MetaBackbone(nn.Module):
             # torch.nn.init.uniform_(m.bias)
             torch.nn.init.constant_(m.bias, 0.5)
 
-class MultiSkillActorCriticv3(nn.Module):
+class SynthObsNet(nn.Module):
+    
+    def __init__(self,hidden_dims, input_dim, output_dim, activation):
+        super(SynthObsNet, self).__init__()
+        self.self_attn = nn.MultiheadAttention(128,2)
+        
+    def forward(self, query, key, value):
+        
+        return self.self_attn(query, key, value)
+    
+class MultiSkillActorCriticSplit(nn.Module):
     def __init__(self,
                 num_skills: List,
                 obs_sizes: Dict[str, int],
@@ -92,17 +102,18 @@ class MultiSkillActorCriticv3(nn.Module):
                 weight_hidden_dims: Dict,
                 meta_backbone_dims: List[int],
                 synthetic_obs_scales: Dict[str, int],
+                synthetic_obs_ingredients: List[str],
                 skill_compositions: Dict[str, List[str]],
                 activation: str = "elu",
                 init_noise_std: float = 1.0,
                 ):
-        super(MultiSkillActorCriticv3, self).__init__()
+        super(MultiSkillActorCriticSplit, self).__init__()
         self.num_actions = num_actions
         activation = get_activation(activation)
         actor_obs_size = {name:self.get_obs_size(obs_sizes, actor_obs_) for name, actor_obs_ in actor_obs.items()}
         critic_obs_size = [self.get_obs_size(obs_sizes, critic_obs_) for critic_obs_ in critic_obs]
         synthetic_obs_size = self.get_obs_size(obs_sizes, synthetic_obs_scales.keys())
-        synth_net_input_size = None# door position, target_position, robot_position, table_position, relative wall position?
+        synth_net_input_size = None# door position, target_position, robot_position, table_position, relative wall corner position?
         self.meta_weight_net_input_size = 128
         self.skill_names = set(actor_hidden_dims.keys()).union(set(weight_hidden_dims.keys()))
         self.actor_branches = {name:Policy(actor_hidden_dims[name], actor_obs_size[name], num_actions, activation) for name in actor_hidden_dims.keys()}
@@ -115,14 +126,12 @@ class MultiSkillActorCriticv3(nn.Module):
         self.synthetic_obs_scales = synthetic_obs_scales
         self.synthetic_obs_size = self.get_obs_size(obs_sizes, list(synthetic_obs_scales.keys()))
         meta_network_obs_size = self.get_obs_size(obs_sizes, meta_network_obs)
-        # self.meta_backbone = MetaBackbone(meta_backbone_dims, meta_network_obs_size, num_skills+synthetic_obs_size*2, activation)
-        self.meta_backbone = MetaBackbone(meta_backbone_dims, meta_network_obs_size, num_skills+synthetic_obs_size, activation)
-        
-        # self.synthetic_obs = SynthObsNet([256,128,64], synth_net_input_size, synthetic_obs_size, activation)
+        self.meta_backbone = MetaBackbone(meta_backbone_dims, meta_network_obs_size, num_skills, activation)
+        self.synthetic_obs_net = SynthObsNet([256,128,64], synth_net_input_size, synthetic_obs_size, activation)
         # Maybe we should feed the computed synthetic observations back in to compute weights?
+        self.synthetic_obs_ingredients = synthetic_obs_ingredients
         self.visualize_weights = None
         self.distribution = None
-        self.synth_obs_distribution = None
         self.is_recurrent = False
         self.std = None
         self.residual_action_magnitude = 0.
@@ -154,8 +163,6 @@ class MultiSkillActorCriticv3(nn.Module):
             indices = [item for sublist in indices for item in sublist]
             obs_indices.append(torch.tensor(indices, device=next(self.parameters()).device))
         return obs_indices
-
-        
         
     def create_network(self, obs_size: int,  output_size:int ,actor_arch: List, activation: Callable):
         network_layers = []
@@ -178,12 +185,14 @@ class MultiSkillActorCriticv3(nn.Module):
             return torch.index_select(observations, -1, self.actor_obs_indices[name].to(observations.device))
     
     def compute_synthetic_obs_and_metaweights(self, observations):
-        # weights, synth_obs = torch.split(self.meta_backbone(observations), [self.num_skills, self.synthetic_obs_size*2], dim=1)
-        weights, synth_obs = torch.split(self.meta_backbone(observations), [self.num_skills, self.synthetic_obs_size], dim=1)
-        
-        # print(synth_obs.size())
-        # self.synth_obs_distribution = Normal(synth_obs[:, :self.synthetic_obs_size], 1e-3 + nn.functional.relu(synth_obs[:, self.synthetic_obs_size:]))
-        # synth_obs = self.synth_obs_distribution.sample()
+        weights = self.meta_backbone(observations)
+        syth_obs_ingredients = [self.select_obs(observations, name) for name in self.synthetic_obs_ingredients]
+        value = torch.stack(synthetic_obs_ingredients, dim=0)
+        object_ids = torch.arange(0,len(syth_obs_ingredients)).repeat(observations.size(0),1)
+        keys = torch.cat([object_ids,values], dim=-1)
+        query = self.select_obs(observations, "target_position")
+        synth_obs = self.synthetic_obs_net(query, key, value)
+        # weights, synth_obs = torch.split(, [self.num_skills, self.synthetic_obs_size], dim=1)
         # print(synth_obs[0])
         # if len(self.synthetic_obs_scales)>1:
         #     self.synth_obs = {k:v for k,v in zip(self.synthetic_obs_scales.keys(), torch.split(synth_obs, list(self.synthetic_obs_scales.values()), dim=1))}
@@ -216,9 +225,7 @@ class MultiSkillActorCriticv3(nn.Module):
 
     def update_distribution(self, observations):
         self.instance_weights, synth_obs = self.compute_synthetic_obs_and_metaweights(observations)
-        # aug_observations = torch.cat([observations, synth_obs*2], dim=1)
         aug_observations = torch.cat([observations, synth_obs], dim=1)
-        
         skill_outputs = {name:branch(self.select_obs(aug_observations, name)) for name, branch in self.actor.items()}
         # skill_means_std = [torch.split(output,self.num_actions,dim=1) for output in skill_outputs]
         weights = {name:weight_net(self.select_obs(aug_observations, name)) for name, weight_net in self.weights.items()}

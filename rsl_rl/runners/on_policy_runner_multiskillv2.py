@@ -60,6 +60,7 @@ class MultiSkillOnPolicyRunnerv2(OnPolicyRunner):
         else:
             num_critic_obs = self.env.num_obs
         actor_critic_class = eval(self.cfg["policy_class_name"]) # ActorCritic
+        print(actor_critic_class)
         actor_critic = actor_critic_class(len(self.cfg["actor_obs"]),                               #num_skills
                                           self.cfg["obs_sizes"],               #obs_sizes
                                           self.cfg["actor_obs"],               #actor_obs

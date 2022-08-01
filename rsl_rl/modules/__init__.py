@@ -33,5 +33,7 @@ from .actor_critic_recurrent import ActorCriticRecurrent
 from .multiskill_actor_critic import MultiSkillActorCritic
 from .multiskill_actor_criticv2 import MultiSkillActorCriticv2
 from .multiskill_actor_criticv3 import MultiSkillActorCriticv3
+from .multiskill_actor_criticv3_split import MultiSkillActorCriticSplit
+
 from .skill_actor_critic import SkillActorCritic
 from .residual_actor_critic import ResidualActorCritic
