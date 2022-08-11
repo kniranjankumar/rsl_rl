@@ -61,7 +61,7 @@ class MultiSkillOnPolicyRunnerv2(OnPolicyRunner):
             num_critic_obs = self.env.num_obs
         actor_critic_class = eval(self.cfg["policy_class_name"]) # ActorCritic
         print(actor_critic_class)
-        actor_critic = actor_critic_class(len(self.cfg["actor_obs"]),                               #num_skills
+        actor_critic = actor_critic_class(len(self.policy_cfg["skill_compositions"]),                               #num_skills
                                           self.cfg["obs_sizes"],               #obs_sizes
                                           self.cfg["actor_obs"],               #actor_obs
                                           self.cfg["critic_obs"],              #critic_obs
@@ -95,27 +95,34 @@ class MultiSkillOnPolicyRunnerv2(OnPolicyRunner):
             loaded_dict = torch.load(path)
             model_state_dict = {}
             weight_net_state_dict = {}
-            branches = [int(key[6]) for key in loaded_dict["model_state_dict"].keys() if "actor" in key and key[6].isdigit()]
-            if len(branches) > 0:
-                num_branches = max(branches)
-            for name, params in loaded_dict["model_state_dict"].items():
-                if "actor" in name:
-                    if skill_name != "straight_walk" and skill_name != "standing": # should be 1 if using standing policy
-                        # Load just the residual skills if i > 1
-                        if "actor."+str(num_branches) in name:
-                            name_ = name[8:]
+            if skill_name != "door_openv2":
+                branches = [int(key[6]) for key in loaded_dict["model_state_dict"].keys() if "actor" in key and key[6].isdigit()]
+                if len(branches) > 0:
+                    num_branches = max(branches)
+                for name, params in loaded_dict["model_state_dict"].items():
+                    if "actor" in name:
+                        if skill_name != "straight_walk" and skill_name != "standing": # should be 1 if using standing policy
+                            # Load just the residual skills if i > 1
+                            if "actor."+str(num_branches) in name:
+                                name_ = name[8:]
+                                model_state_dict[name_] = params
+                        else:
+                            name_ = name[6:]
                             model_state_dict[name_] = params
-                    else:
-                        name_ = name[6:]
-                        model_state_dict[name_] = params
-                elif "weights" in name:
-                        # print("loading weights", params)
-                        weight_net_state_dict[name[8:]] = params
+                    elif "weights" in name:
+                            # print("loading weights", params)
+                            weight_net_state_dict[name[8:]] = params
+            else:
+                for name, params in loaded_dict["model_state_dict"].items():
+                    if "actor.residual" in name:
+                        model_state_dict[name[15:]] = params
+                    elif "meta_backbone" in name:
+                        weight_net_state_dict["layers"+name[28:]] = params
+                        
             if skill_name in self.alg.actor_critic.actor.keys():
                 self.alg.actor_critic.actor[skill_name].load_state_dict(model_state_dict, True)
                 for parms in self.alg.actor_critic.actor[skill_name].parameters():
-                   parms.requires_grad = False
- 
+                    parms.requires_grad = False
             if len(weight_net_state_dict.keys()) > 0:
                 self.alg.actor_critic.weights[skill_name].load_state_dict(weight_net_state_dict, True)
                 weight_layer_count += 1

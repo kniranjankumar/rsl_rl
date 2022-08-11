@@ -81,13 +81,13 @@ class MetaBackbone(nn.Module):
 
 class SynthObsNet(nn.Module):
     
-    def __init__(self,hidden_dims, input_dim, output_dim, activation):
+    def __init__(self,hidden_dims):#, input_dim, output_dim, activation):
         super(SynthObsNet, self).__init__()
-        self.self_attn = nn.MultiheadAttention(128,2)
+        self.self_attn = nn.MultiheadAttention(9,1)
         
     def forward(self, query, key, value):
         
-        return self.self_attn(query, key, value)
+        return self.self_attn(query.unsqueeze(0), key, key)
     
 class MultiSkillActorCriticSplit(nn.Module):
     def __init__(self,
@@ -127,7 +127,7 @@ class MultiSkillActorCriticSplit(nn.Module):
         self.synthetic_obs_size = self.get_obs_size(obs_sizes, list(synthetic_obs_scales.keys()))
         meta_network_obs_size = self.get_obs_size(obs_sizes, meta_network_obs)
         self.meta_backbone = MetaBackbone(meta_backbone_dims, meta_network_obs_size, num_skills, activation)
-        self.synthetic_obs_net = SynthObsNet([256,128,64], synth_net_input_size, synthetic_obs_size, activation)
+        self.synthetic_obs_net = SynthObsNet([256,128,64])#, synth_net_input_size, synthetic_obs_size, activation)
         # Maybe we should feed the computed synthetic observations back in to compute weights?
         self.synthetic_obs_ingredients = synthetic_obs_ingredients
         self.visualize_weights = None
@@ -140,6 +140,8 @@ class MultiSkillActorCriticSplit(nn.Module):
         self.critic_obs = critic_obs
         self.actor_obs_indices = {key:value for key, value in zip(actor_obs.keys(),self.get_obs_indices(obs_sizes, actor_obs.values()))}
         self.critic_obs_indices = self.get_obs_indices(obs_sizes, critic_obs)
+        self.synth_net_obs = self.get_obs_indices(obs_sizes, [synthetic_obs_ingredients])
+        self.target_location_idx = self.get_obs_indices(obs_sizes, [["target_position"]])
         self.skill_compositions = skill_compositions
         self.synthetic_observation_buffer = {}
         # disable args validation for speedup
@@ -186,12 +188,17 @@ class MultiSkillActorCriticSplit(nn.Module):
     
     def compute_synthetic_obs_and_metaweights(self, observations):
         weights = self.meta_backbone(observations)
-        syth_obs_ingredients = [self.select_obs(observations, name) for name in self.synthetic_obs_ingredients]
-        value = torch.stack(synthetic_obs_ingredients, dim=0)
-        object_ids = torch.arange(0,len(syth_obs_ingredients)).repeat(observations.size(0),1)
-        keys = torch.cat([object_ids,values], dim=-1)
-        query = self.select_obs(observations, "target_position")
-        synth_obs = self.synthetic_obs_net(query, key, value)
+        # syth_obs_ingredients = [self.select_obs(observations, name) for name in self.synthetic_obs_ingredients]
+        syth_obs_ingredients = torch.index_select(observations,-1,self.synth_net_obs[0].to(observations.device))
+        # value = torch.stack(synthetic_obs_ingredients, dim=0)
+        value = syth_obs_ingredients.view(-1,observations.size(0),2)
+        # object_ids = torch.arange(0,value.size(0)).repeat(observations.size(0),1).permute(1,0).unsqueeze(-1).to(observations.device)
+        object_ids = nn.functional.one_hot(torch.arange(0,value.size(0))).unsqueeze(1).repeat(1,observations.size(0),1).to(observations.device)
+        keys = torch.cat([object_ids,value], dim=-1)
+        # query = self.select_obs(observations, "target_position")
+        target_loc = torch.index_select(observations, -1, self.target_location_idx[0].to(observations.device))
+        query = torch.cat([object_ids[0]*0,target_loc],dim=-1)
+        synth_obs = self.synthetic_obs_net(query, keys, value)[0][0,:,:2]
         # weights, synth_obs = torch.split(, [self.num_skills, self.synthetic_obs_size], dim=1)
         # print(synth_obs[0])
         # if len(self.synthetic_obs_scales)>1:
