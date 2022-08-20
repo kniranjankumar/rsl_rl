@@ -86,7 +86,20 @@ class MultiSkillOnPolicyRunnerv2(OnPolicyRunner):
         self.load_skills(self.cfg["skill_paths"])
         _, _ = self.env.reset()
 
-
+    def get_inference_policy(self, device=None):
+        self.alg.actor_critic.eval() # switch to evaluation mode (dropout for example)
+        if device is not None:
+            self.alg.actor_critic.to(device)
+        return self.alg.actor_critic.act
+    
+    # def load(self, path, load_optimizer=True):
+    #     loaded_dict = torch.load(path)
+    #     self.alg.actor_critic.load_state_dict(loaded_dict['model_state_dict'], False)
+    #     if load_optimizer and False:
+    #         self.alg.optimizer.load_state_dict(loaded_dict['optimizer_state_dict'])
+    #     self.current_learning_iteration = loaded_dict['iter']
+    #     return loaded_dict['infos']
+    
     def load_skills(self, paths, load_optimizer=False):
         weight_layer_count = 0
         

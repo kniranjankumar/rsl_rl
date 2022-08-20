@@ -6,7 +6,7 @@ import torch.nn as nn
 from torch.distributions import Normal
 from torch.nn.modules import rnn
 from typing import Any, Dict, List, Optional, Tuple, Type, Union, Callable
-from copy import deepcopy
+
 class Policy(nn.Module):
     def __init__(self,hidden_dims, input_dim, num_actions, activation):
         super(Policy, self).__init__()
@@ -79,7 +79,17 @@ class MetaBackbone(nn.Module):
             # torch.nn.init.uniform_(m.bias)
             torch.nn.init.constant_(m.bias, 0.5)
 
-class MultiSkillActorCriticv3(nn.Module):
+class SynthObsNet(nn.Module):
+    
+    def __init__(self,hidden_dims):#, input_dim, output_dim, activation):
+        super(SynthObsNet, self).__init__()
+        self.self_attn = nn.MultiheadAttention(9,1)
+        
+    def forward(self, query, key, value):
+        
+        return self.self_attn(query.unsqueeze(0), key, key)
+    
+class MultiSkillActorCriticSplitAttn(nn.Module):
     def __init__(self,
                 num_skills: List,
                 obs_sizes: Dict[str, int],
@@ -92,31 +102,18 @@ class MultiSkillActorCriticv3(nn.Module):
                 weight_hidden_dims: Dict,
                 meta_backbone_dims: List[int],
                 synthetic_obs_scales: Dict[str, int],
+                synthetic_obs_ingredients: List[str],
                 skill_compositions: Dict[str, List[str]],
                 activation: str = "elu",
                 init_noise_std: float = 1.0,
                 ):
-        super(MultiSkillActorCriticv3, self).__init__()
+        super(MultiSkillActorCriticSplitAttn, self).__init__()
         self.num_actions = num_actions
         activation = get_activation(activation)
-        weight_obs = deepcopy(actor_obs)
-        if "door_openv2" in weight_obs.keys():
-            weight_obs["door_openv2"] = ["scaled_base_lin_vel",
-                                "scaled_base_ang_vel",
-                                "projected_gravity",
-                                # "target_position",
-                                "door_position",
-                                "door_angle",
-                                "relative_dof",
-                                "scaled_dof_vel",
-                                "actions",
-                                "robot_position"]
         actor_obs_size = {name:self.get_obs_size(obs_sizes, actor_obs_) for name, actor_obs_ in actor_obs.items()}
-        weight_obs_size = {name:self.get_obs_size(obs_sizes, weight_obs_) for name, weight_obs_ in weight_obs.items()}
-        
         critic_obs_size = [self.get_obs_size(obs_sizes, critic_obs_) for critic_obs_ in critic_obs]
         synthetic_obs_size = self.get_obs_size(obs_sizes, synthetic_obs_scales.keys())
-        synth_net_input_size = None# door position, target_position, robot_position, table_position, relative wall position?
+        synth_net_input_size = None# door position, target_position, robot_position, table_position, relative wall corner position?
         self.meta_weight_net_input_size = 128
         self.skill_names = set(actor_hidden_dims.keys()).union(set(weight_hidden_dims.keys()))
         self.actor_branches = {name:Policy(actor_hidden_dims[name], actor_obs_size[name], num_actions, activation) for name in actor_hidden_dims.keys()}
@@ -124,21 +121,17 @@ class MultiSkillActorCriticv3(nn.Module):
         # actor_stds =  [nn.Parameter(init_noise_std * torch.ones(num_actions)) for i, num_action_ in enumerate(num_actions)]
         self.critic = self.create_network(critic_obs_size[-1], 1, critic_hidden_dims, activation)
         # self.weights = Weights([128], actor_obs_size[-1], num_skills, activation)
-        # weights_obs_size = actor_obs_size
-        
-        self.weight_branches = {name:Weights(weight_hidden_dims[name][:-1], weight_obs_size[name], weight_hidden_dims[name][-1], activation) for name in weight_hidden_dims.keys()}
+        self.weight_branches = {name:Weights(weight_hidden_dims[name][:-1], actor_obs_size[name], weight_hidden_dims[name][-1], activation) for name in weight_hidden_dims.keys()}
         self.weights = nn.ModuleDict(self.weight_branches)
         self.synthetic_obs_scales = synthetic_obs_scales
         self.synthetic_obs_size = self.get_obs_size(obs_sizes, list(synthetic_obs_scales.keys()))
         meta_network_obs_size = self.get_obs_size(obs_sizes, meta_network_obs)
-        # self.meta_backbone = MetaBackbone(meta_backbone_dims, meta_network_obs_size, num_skills+synthetic_obs_size*2, activation)
-        self.meta_backbone = MetaBackbone(meta_backbone_dims, meta_network_obs_size, num_skills+synthetic_obs_size, activation)
-    
-        # self.synthetic_obs = SynthObsNet([256,128,64], synth_net_input_size, synthetic_obs_size, activation)
+        self.meta_backbone = MetaBackbone(meta_backbone_dims, meta_network_obs_size, num_skills, activation)
+        self.synthetic_obs_net = SynthObsNet([256,128,64])#, synth_net_input_size, synthetic_obs_size, activation)
         # Maybe we should feed the computed synthetic observations back in to compute weights?
+        self.synthetic_obs_ingredients = synthetic_obs_ingredients
         self.visualize_weights = None
         self.distribution = None
-        self.synth_obs_distribution = None
         self.is_recurrent = False
         self.std = None
         self.residual_action_magnitude = 0.
@@ -146,8 +139,9 @@ class MultiSkillActorCriticv3(nn.Module):
         self.actor_obs = actor_obs
         self.critic_obs = critic_obs
         self.actor_obs_indices = {key:value for key, value in zip(actor_obs.keys(),self.get_obs_indices(obs_sizes, actor_obs.values()))}
-        self.weight_obs_indices = {key:value for key, value in zip(weight_obs.keys(),self.get_obs_indices(obs_sizes, weight_obs.values()))}
         self.critic_obs_indices = self.get_obs_indices(obs_sizes, critic_obs)
+        self.synth_net_obs = self.get_obs_indices(obs_sizes, [synthetic_obs_ingredients])
+        self.target_location_idx = self.get_obs_indices(obs_sizes, [["target_position"]])
         self.skill_compositions = skill_compositions
         self.synthetic_observation_buffer = {}
         # disable args validation for speedup
@@ -171,8 +165,6 @@ class MultiSkillActorCriticv3(nn.Module):
             indices = [item for sublist in indices for item in sublist]
             obs_indices.append(torch.tensor(indices, device=next(self.parameters()).device))
         return obs_indices
-
-        
         
     def create_network(self, obs_size: int,  output_size:int ,actor_arch: List, activation: Callable):
         network_layers = []
@@ -188,25 +180,26 @@ class MultiSkillActorCriticv3(nn.Module):
         network = nn.Sequential(*network_layers)
         return network
 
-    def select_obs_actor(self, observations, name):
+    def select_obs(self, observations, name):
         # if name in self.synthetic_obs_scales.keys():
         #     return self.synth_obs[name]*self.synthetic_obs_scales[name]
         # else:
             return torch.index_select(observations, -1, self.actor_obs_indices[name].to(observations.device))
-
-    def select_obs_weights(self, observations, name):
-        # if name in self.synthetic_obs_scales.keys():
-        #     return self.synth_obs[name]*self.synthetic_obs_scales[name]
-        # else:
-            return torch.index_select(observations, -1, self.weight_obs_indices[name].to(observations.device))
-
+    
     def compute_synthetic_obs_and_metaweights(self, observations):
-        # weights, synth_obs = torch.split(self.meta_backbone(observations), [self.num_skills, self.synthetic_obs_size*2], dim=1)
-        weights, synth_obs = torch.split(self.meta_backbone(observations), [self.num_skills, self.synthetic_obs_size], dim=1)
-        self.residual_weights = weights[:,-1]
-        # print(synth_obs.size())
-        # self.synth_obs_distribution = Normal(synth_obs[:, :self.synthetic_obs_size], 1e-3 + nn.functional.relu(synth_obs[:, self.synthetic_obs_size:]))
-        # synth_obs = self.synth_obs_distribution.sample()
+        weights = self.meta_backbone(observations)
+        # syth_obs_ingredients = [self.select_obs(observations, name) for name in self.synthetic_obs_ingredients]
+        syth_obs_ingredients = torch.index_select(observations,-1,self.synth_net_obs[0].to(observations.device))
+        # value = torch.stack(synthetic_obs_ingredients, dim=0)
+        value = syth_obs_ingredients.view(-1,observations.size(0),2)
+        # object_ids = torch.arange(0,value.size(0)).repeat(observations.size(0),1).permute(1,0).unsqueeze(-1).to(observations.device)
+        object_ids = nn.functional.one_hot(torch.arange(0,value.size(0))).unsqueeze(1).repeat(1,observations.size(0),1).to(observations.device)
+        keys = torch.cat([object_ids,value], dim=-1)
+        # query = self.select_obs(observations, "target_position")
+        target_loc = torch.index_select(observations, -1, self.target_location_idx[0].to(observations.device))
+        query = torch.cat([object_ids[0]*0,target_loc],dim=-1)
+        synth_obs = self.synthetic_obs_net(query, keys, value)[0][0,:,:2]
+        # weights, synth_obs = torch.split(, [self.num_skills, self.synthetic_obs_size], dim=1)
         # print(synth_obs[0])
         # if len(self.synthetic_obs_scales)>1:
         #     self.synth_obs = {k:v for k,v in zip(self.synthetic_obs_scales.keys(), torch.split(synth_obs, list(self.synthetic_obs_scales.values()), dim=1))}
@@ -231,6 +224,7 @@ class MultiSkillActorCriticv3(nn.Module):
         mean_skill_weights = scaled_weights.mean(-1)[0]
         
         self.visualize_weights = (mean_skill_weights/mean_skill_weights.sum()).tolist()
+        
         # print(scaled_weights.max(), scaled_weights.min(), stds.max(), stds.min(), nn.functional.softmax(self.weights))
         combined_std = 1/scaled_weights.sum(dim=1) 
         combined_mean = combined_std *(means*scaled_weights).sum(dim=1)
@@ -238,36 +232,17 @@ class MultiSkillActorCriticv3(nn.Module):
 
     def update_distribution(self, observations):
         self.instance_weights, synth_obs = self.compute_synthetic_obs_and_metaweights(observations)
-        # aug_observations = torch.cat([observations, synth_obs*2], dim=1)
         aug_observations = torch.cat([observations, synth_obs], dim=1)
-        
-        # these are residual outputs
-        skill_outputs = {name:branch(self.select_obs_actor(aug_observations, name)) for name, branch in self.actor.items()}
+        skill_outputs = {name:branch(self.select_obs(aug_observations, name)) for name, branch in self.actor.items()}
         # skill_means_std = [torch.split(output,self.num_actions,dim=1) for output in skill_outputs]
-        weights = {name:weight_net(self.select_obs_weights(aug_observations, name)) for name, weight_net in self.weights.items()}
-        doorv2_weights_, doorv2_target_reach_synth_obs = torch.split(weights["door_openv2"], [7,2],dim=1)
-        doorv2_target_reach_aug_obs = torch.cat([observations, nn.functional.normalize(doorv2_target_reach_synth_obs)],dim=1)
-        doorv2_weights = nn.functional.softmax(doorv2_weights_,dim=1)
-        weights["door_openv2"] = doorv2_weights
+        weights = {name:weight_net(self.select_obs(aug_observations, name)) for name, weight_net in self.weights.items()}
         skill_means, skill_std = [], []
         for skill_name, compositions_list in self.skill_compositions.items():
             if skill_name in self.weight_branches.keys(): # this skill has multiple branches which should be combined
-                if skill_name == "door_openv2":
-                    target_chosen_skill_outputs = [skill_outputs[skill_] for skill_ in compositions_list[:4]]
-                    target_reach_weights = self.weights["target_reach"](self.select_obs_weights(doorv2_target_reach_aug_obs, "target_reach"))
-                    mean_target_chosen_skill_outputs, std_target_chosen_skill_outputs = zip(*target_chosen_skill_outputs)    
-                    
-                    target_net_mean, target_net_std = self.combine_skills(torch.stack(mean_target_chosen_skill_outputs,1), 
-                                                                          torch.stack(std_target_chosen_skill_outputs,1), 
-                                                                          torch.stack(self.num_actions*[target_reach_weights], dim=-1))
-                    skill_outputs["target_reach"] = [target_net_mean, target_net_std]
-                    # chosen_skill_outputs = [skill_outputs[skill_] for skill_ in compositions_list if skill_name != "target_reach"]
-                # else:
                 chosen_skill_outputs = [skill_outputs[skill_] for skill_ in compositions_list]
                 mean_chosen_skill_outputs, std_chosen_skill_outputs = zip(*chosen_skill_outputs)    
-                mean, std = self.combine_skills(torch.stack(mean_chosen_skill_outputs,1), 
-                                                torch.stack(std_chosen_skill_outputs,1), 
-                                                torch.stack(self.num_actions*[weights[skill_name]], dim=-1))
+                mean, std = self.combine_skills(torch.stack(mean_chosen_skill_outputs,1), torch.stack(std_chosen_skill_outputs,1), torch.stack(self.num_actions*[weights[skill_name]], dim=-1))
+
             else:
                 mean = skill_outputs[skill_name][0]
                 std = skill_outputs[skill_name][1]
@@ -328,68 +303,19 @@ class MultiSkillActorCriticv3(nn.Module):
         return self.distribution.log_prob(actions).sum(dim=-1)
 
     def act_inference(self, observations):
-        # self.instance_weights, synth_obs = self.compute_synthetic_obs_and_metaweights(observations)
-        # aug_observations = torch.cat([observations, synth_obs*3], dim=1)
-        # # self.instance_weights = self.compute_synthetic_obs_and_metaweights(aug_observations)
-        
-        # skill_outputs = {name:branch(self.select_obs_actor(aug_observations, name)) for name, branch in self.actor.items()}
-        # # skill_means_std = [torch.split(output,self.num_actions,dim=1) for output in skill_outputs]
-        # weights = {name:weight_net(self.select_obs_weights(aug_observations, name)) for name, weight_net in self.weights.items()}
-        # skill_means, skill_std = [], []
-        # for skill_name, compositions_list in self.skill_compositions.items():
-        #     if skill_name in self.weight_branches.keys(): # this skill has multiple branches which should be combined
-        #         chosen_skill_outputs = [skill_outputs[skill_] for skill_ in compositions_list]
-        #         mean_chosen_skill_outputs, std_chosen_skill_outputs = zip(*chosen_skill_outputs)    
-        #         mean, std = self.combine_skills(torch.stack(mean_chosen_skill_outputs,1), torch.stack(std_chosen_skill_outputs,1), torch.stack(self.num_actions*[weights[skill_name]], dim=-1))
-        #     else:
-        #         mean = skill_outputs[skill_name][0]
-        #         std = skill_outputs[skill_name][1]
-        #     skill_means.append(mean)
-        #     skill_std.append(std)   
-        # # skill_means, skill_std = zip(*skill_outputs)
-        # self.std = torch.stack(skill_std, 1)
-        # self.residual_action_magnitude = torch.norm(skill_means[-1],p=2,dim=1).mean()
-        # # print(self.residual_action)
-        # # print(self.residual_action_magnitude)
-        # # self.std = self.get_std_from_logstd(log_std)
-
-        # # skill_std = torch.unbind(std,1)
-        # # skill_std = torch.ReLU(skill_std)
-        
-        # combined_mean, combined_std = self.combine_skills(torch.stack(skill_means,1), self.std, torch.stack(self.num_actions*[self.instance_weights], dim=-1))
-        # # self.distribution = Normal(combined_mean, combined_std)
-        # # return self.distribution.sample()
         self.instance_weights, synth_obs = self.compute_synthetic_obs_and_metaweights(observations)
-        # aug_observations = torch.cat([observations, synth_obs*2], dim=1)
-        aug_observations = torch.cat([observations, synth_obs], dim=1)
+        aug_observations = torch.cat([observations, synth_obs*3], dim=1)
+        # self.instance_weights = self.compute_synthetic_obs_and_metaweights(aug_observations)
         
-        # these are residual outputs
-        skill_outputs = {name:branch(self.select_obs_actor(aug_observations, name)) for name, branch in self.actor.items()}
+        skill_outputs = {name:branch(self.select_obs(aug_observations, name)) for name, branch in self.actor.items()}
         # skill_means_std = [torch.split(output,self.num_actions,dim=1) for output in skill_outputs]
-        weights = {name:weight_net(self.select_obs_weights(aug_observations, name)) for name, weight_net in self.weights.items()}
-        doorv2_weights_, doorv2_target_reach_synth_obs = torch.split(weights["door_openv2"], [7,2],dim=1)
-        doorv2_target_reach_aug_obs = torch.cat([observations, nn.functional.normalize(doorv2_target_reach_synth_obs)],dim=1)
-        doorv2_weights = nn.functional.softmax(doorv2_weights_,dim=1)
-        weights["door_openv2"] = doorv2_weights
+        weights = {name:weight_net(self.select_obs(aug_observations, name)) for name, weight_net in self.weights.items()}
         skill_means, skill_std = [], []
         for skill_name, compositions_list in self.skill_compositions.items():
             if skill_name in self.weight_branches.keys(): # this skill has multiple branches which should be combined
-                if skill_name == "door_openv2":
-                    target_chosen_skill_outputs = [skill_outputs[skill_] for skill_ in compositions_list[:4]]
-                    target_reach_weights = self.weights["target_reach"](self.select_obs_weights(doorv2_target_reach_aug_obs, "target_reach"))
-                    mean_target_chosen_skill_outputs, std_target_chosen_skill_outputs = zip(*target_chosen_skill_outputs)    
-                    
-                    target_net_mean, target_net_std = self.combine_skills(torch.stack(mean_target_chosen_skill_outputs,1), 
-                                                                          torch.stack(std_target_chosen_skill_outputs,1), 
-                                                                          torch.stack(self.num_actions*[target_reach_weights], dim=-1))
-                    skill_outputs["target_reach"] = [target_net_mean, target_net_std]
-                    # chosen_skill_outputs = [skill_outputs[skill_] for skill_ in compositions_list if skill_name != "target_reach"]
-                # else:
                 chosen_skill_outputs = [skill_outputs[skill_] for skill_ in compositions_list]
                 mean_chosen_skill_outputs, std_chosen_skill_outputs = zip(*chosen_skill_outputs)    
-                mean, std = self.combine_skills(torch.stack(mean_chosen_skill_outputs,1), 
-                                                torch.stack(std_chosen_skill_outputs,1), 
-                                                torch.stack(self.num_actions*[weights[skill_name]], dim=-1))
+                mean, std = self.combine_skills(torch.stack(mean_chosen_skill_outputs,1), torch.stack(std_chosen_skill_outputs,1), torch.stack(self.num_actions*[weights[skill_name]], dim=-1))
             else:
                 mean = skill_outputs[skill_name][0]
                 std = skill_outputs[skill_name][1]
