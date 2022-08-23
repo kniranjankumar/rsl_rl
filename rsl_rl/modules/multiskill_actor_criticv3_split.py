@@ -307,7 +307,7 @@ class MultiSkillActorCriticSplit(nn.Module):
         # skill_means, skill_std = zip(*skill_outputs)
 
         self.std = torch.stack(skill_std, 1)
-        self.residual_action_magnitude = torch.norm(skill_means[-1],p=2,dim=1).mean() +  torch.abs(self.residual_weights_).mean()
+        self.residual_action_magnitude = torch.norm(skill_means[-1],p=2,dim=1).mean() #+  torch.abs(self.residual_weights_).mean()
         
         # print(self.residual_action)
         # print(self.residual_action_magnitude)
