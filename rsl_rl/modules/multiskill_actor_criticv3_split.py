@@ -108,7 +108,7 @@ class MultiSkillActorCriticSplit(nn.Module):
                 ):
         super(MultiSkillActorCriticSplit, self).__init__()
         self.num_actions = num_actions
-        self.use_residual = "residual" in actor_hidden_dims.keys()
+        self.use_residual = "residual" in actor_hidden_dims.keys() and False
         activation = get_activation(activation)
         weight_obs = deepcopy(actor_obs)
         if "door_openv2" in weight_obs.keys():
@@ -218,28 +218,30 @@ class MultiSkillActorCriticSplit(nn.Module):
             return torch.index_select(observations, -1, self.weight_obs_indices[name].to(observations.device))
 
     def compute_synthetic_obs_and_metaweights(self, observations):
-        meta_weight_net_obs = torch.index_select(observations, -1, self.meta_net_obs_indices [0].to(observations.device))
+        synth_obs_ingredients = torch.index_select(observations,-1,self.synth_net_obs[0].to(observations.device))
+        synth_obs = self.synth_obs_net(synth_obs_ingredients)
+        synth_obs = nn.functional.normalize(synth_obs)*self.synthetic_obs_scales["synth_target_position"]
+        aug_observations = torch.cat([observations, synth_obs], dim=1)
+        meta_weight_net_obs = torch.index_select(aug_observations, -1, self.meta_net_obs_indices [0].to(aug_observations.device))
         if self.use_residual:
             weights, penultimate_output = self.meta_backbone(meta_weight_net_obs, True)
-            self.residual_weights_ = -self.residual_weight(penultimate_output)*100
+            self.residual_weights_ = -self.residual_weight(penultimate_output)
             weights = torch.cat([weights,self.residual_weights_], dim=1)
             # print(weights[0])
         else:
             weights = self.meta_backbone(meta_weight_net_obs, False)
-        synth_obs_ingredients = torch.index_select(observations,-1,self.synth_net_obs[0].to(observations.device))
+            self.residual_weights_ = torch.abs(weights[:,-1]).mean()
         # value = syth_obs_ingredients.view(-1,observations.size(0),2)
         # object_ids = nn.functional.one_hot(torch.arange(0,value.size(0))).unsqueeze(1).repeat(1,observations.size(0),1).to(observations.device)
         # keys = torch.cat([object_ids,value], dim=-1)
         # target_loc = torch.index_select(observations, -1, self.target_location_idx[0].to(observations.device))
         # query = torch.cat([object_ids[0]*0,target_loc],dim=-1)
         # synth_obs = self.synthetic_obs_net(query, keys, value)[0][0,:,:2]
-        synth_obs = self.synth_obs_net(synth_obs_ingredients)
         weights = nn.functional.softmax(weights, dim=1)
-        synth_obs = nn.functional.normalize(synth_obs)
         # print(synth_obs[0])
         # weights = torch.cat([weights,torch.zeros_like(weights[:,0]).unsqueeze(1)],dim=1)
         # print(weights[0])
-        return weights, synth_obs
+        return weights, aug_observations
     
     def combine_skills(self, means, stds, weights):
         """This function combines skills following AMP
@@ -264,9 +266,9 @@ class MultiSkillActorCriticSplit(nn.Module):
         return combined_mean, combined_std
 
     def update_distribution(self, observations):
-        self.instance_weights, synth_obs = self.compute_synthetic_obs_and_metaweights(observations)
+        self.instance_weights, aug_observations = self.compute_synthetic_obs_and_metaweights(observations)
         # aug_observations = torch.cat([observations, synth_obs*2], dim=1)
-        aug_observations = torch.cat([observations, synth_obs], dim=1)
+        
         
         # these are residual outputs
         skill_outputs = {name:branch(self.select_obs_actor(aug_observations, name)) for name, branch in self.actor.items()}
@@ -307,7 +309,8 @@ class MultiSkillActorCriticSplit(nn.Module):
         # skill_means, skill_std = zip(*skill_outputs)
 
         self.std = torch.stack(skill_std, 1)
-        self.residual_action_magnitude = torch.norm(skill_means[-1],p=2,dim=1).mean() #+  torch.abs(self.residual_weights_).mean()
+        weight_scale_factor = 10
+        self.residual_action_magnitude = torch.norm(skill_means[-1],p=2,dim=1).mean() 
         
         # print(self.residual_action)
         # print(self.residual_action_magnitude)
@@ -443,8 +446,8 @@ class MultiSkillActorCriticSplit(nn.Module):
         # return skill_outputs[-1][0]
 
     def evaluate(self, critic_observations, **kwargs):
-        self.instance_weights, synth_obs = self.compute_synthetic_obs_and_metaweights(critic_observations)
-        aug_observations = torch.cat([critic_observations, synth_obs], dim=1)
+        self.instance_weights, aug_observations = self.compute_synthetic_obs_and_metaweights(critic_observations)
+        # aug_observations = torch.cat([critic_observations, synth_obs], dim=1)
         value = self.critic(aug_observations)
         return value
 

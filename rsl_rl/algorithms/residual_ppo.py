@@ -52,7 +52,8 @@ class ResidualPPO:
                  schedule="fixed",
                  desired_kl=0.01,
                  device='cpu',
-                 residual_action_penalty_coef=0.02
+                 residual_action_penalty_coef=0.02,
+                 residual_weight_penalty_coef=10.0
                  ):
 
         self.device = device
@@ -81,6 +82,7 @@ class ResidualPPO:
 
         # Residual PPO parameters
         self.residual_action_penalty_coef = residual_action_penalty_coef
+        self.residual_weight_penalty_coef = residual_weight_penalty_coef
 
     def init_storage(self, num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, action_shape):
         self.storage = RolloutStorage(num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, action_shape, self.device)
@@ -124,6 +126,8 @@ class ResidualPPO:
     def update(self):
         mean_value_loss = 0
         mean_surrogate_loss = 0
+        residual_action_magnitude = 0
+        residual_weight = 0
         if self.actor_critic.is_recurrent:
             generator = self.storage.reccurent_mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
         else:
@@ -178,8 +182,10 @@ class ResidualPPO:
                 # loss += self.actor_critic.residual_action_magnitude * 0.009 # this is for door opening
                 # loss += self.actor_critic.residual_action_magnitude * 0.05 # this is for target reaching
                 # loss += self.actor_critic.residual_action_magnitude * 0.02 # this is for object pushing
-                
+                residual_action_magnitude += self.actor_critic.residual_action_magnitude
+                residual_weight += self.actor_critic.residual_weights_
                 loss += self.actor_critic.residual_action_magnitude * self.residual_action_penalty_coef
+                loss += self.actor_critic.residual_weights_ * self.residual_weight_penalty_coef
                 # loss -= torch.norm(self.actor_critic.instance_weights,p=float('inf'),dim=1).mean() *0.01
                 # print(self.actor_critic.residual_action_magnitude)
                 # loss += self.actor_critic.instance_weights
@@ -195,6 +201,8 @@ class ResidualPPO:
         num_updates = self.num_learning_epochs * self.num_mini_batches
         mean_value_loss /= num_updates
         mean_surrogate_loss /= num_updates
+        residual_action_magnitude /= num_updates
+        residual_weight /= num_updates
         self.storage.clear()
 
-        return mean_value_loss, mean_surrogate_loss
+        return mean_value_loss, mean_surrogate_loss, residual_weight, residual_action_magnitude
