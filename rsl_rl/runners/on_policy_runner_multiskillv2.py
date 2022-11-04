@@ -116,7 +116,7 @@ class MultiSkillOnPolicyRunnerv2(OnPolicyRunner):
                     if "actor" in name:
                         if skill_name != "straight_walk" and skill_name != "standing": # should be 1 if using standing policy
                             # Load just the residual skills if i > 1
-                            if "actor."+str(num_branches) in name:
+                            if "actor."+str(num_branches) in name[:14]: # might hit base_extr"actor.num".
                                 name_ = name[8:]
                                 model_state_dict[name_] = params
                         else:
@@ -133,6 +133,7 @@ class MultiSkillOnPolicyRunnerv2(OnPolicyRunner):
                         weight_net_state_dict["layers"+name[28:]] = params
                         
             if skill_name in self.alg.actor_critic.actor.keys():
+                print(skill_name)
                 self.alg.actor_critic.actor[skill_name].load_state_dict(model_state_dict, True)
                 for parms in self.alg.actor_critic.actor[skill_name].parameters():
                     parms.requires_grad = False
@@ -141,6 +142,8 @@ class MultiSkillOnPolicyRunnerv2(OnPolicyRunner):
                 weight_layer_count += 1
                 for parms in self.alg.actor_critic.weights[skill_name].parameters():
                     parms.requires_grad = False
+        for parms in self.alg.actor_critic.actor["residual"].parameters():
+            parms.requires_grad = False 
 
         # weight_init= len(paths)*[1/len(paths)-0.2]+ (len(self.alg.actor_critic.actor)-len(paths))*[0.01] # this sums up to 1, but may not be necessary
         # self.alg.actor_critic.weights.data = torch.tensor(weight_init, device=self.device)

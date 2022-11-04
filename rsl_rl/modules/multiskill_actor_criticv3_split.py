@@ -25,6 +25,8 @@ class Policy(nn.Module):
         self.action_stds = nn.Linear(hidden_dims[-1], num_actions)
         # self.action_stds.bias.data.fill_(1.0)
         self.action_stds.bias.data.fill_(0.1)
+        # self.action_means.bias.data.fill_(0)
+        # self.action_means.weight.data.fill_(0)
         
     
     def forward(self, obs):
@@ -121,7 +123,9 @@ class MultiSkillActorCriticSplit(nn.Module):
                                 "relative_dof",
                                 "scaled_dof_vel",
                                 "actions",
-                                "robot_position"]
+                                "robot_angle"
+                                # "robot_position"
+                                ]
         actor_obs_size = {name:self.get_obs_size(obs_sizes, actor_obs_) for name, actor_obs_ in actor_obs.items()}
         weight_obs_size = {name:self.get_obs_size(obs_sizes, weight_obs_) for name, weight_obs_ in weight_obs.items()}
         
@@ -147,7 +151,7 @@ class MultiSkillActorCriticSplit(nn.Module):
             num_skills -= 1
         self.meta_backbone = MetaBackbone(meta_backbone_dims, meta_network_obs_size, num_skills, activation)
         self.synth_obs_net = MetaBackbone([512,256,128], synth_net_input_size, synthetic_obs_size, activation)
-        self.residual_weight = nn.Linear(meta_backbone_dims[-1], 1) if self.use_residual else None
+        # self.residual_weight = nn.Linear(meta_backbone_dims[-1], 1) if self.use_residual else None
         # Maybe we should feed the computed synthetic observations back in to compute weights?
         self.synthetic_obs_ingredients = synthetic_obs_ingredients
         self.meta_net_obs_indices = self.get_obs_indices(obs_sizes, [meta_network_obs])
@@ -230,6 +234,7 @@ class MultiSkillActorCriticSplit(nn.Module):
             # print(weights[0])
         else:
             weights = self.meta_backbone(meta_weight_net_obs, False)
+             
             self.residual_weights_ = torch.abs(weights[:,-1]).mean()
         # value = syth_obs_ingredients.view(-1,observations.size(0),2)
         # object_ids = nn.functional.one_hot(torch.arange(0,value.size(0))).unsqueeze(1).repeat(1,observations.size(0),1).to(observations.device)
@@ -238,6 +243,9 @@ class MultiSkillActorCriticSplit(nn.Module):
         # query = torch.cat([object_ids[0]*0,target_loc],dim=-1)
         # synth_obs = self.synthetic_obs_net(query, keys, value)[0][0,:,:2]
         weights = nn.functional.softmax(weights, dim=1)
+        # mask = torch.ones_like(weights)
+        # mask[:,-1] = 1e-6
+        # weights= weights*mask
         # print(synth_obs[0])
         # weights = torch.cat([weights,torch.zeros_like(weights[:,0]).unsqueeze(1)],dim=1)
         # print(weights[0])
@@ -256,7 +264,7 @@ class MultiSkillActorCriticSplit(nn.Module):
         # scaled_weights = nn.functional.softmax(weights)/stds
         stds = stds+1e-2
         scaled_weights = weights/stds #+ 1e-2
-        mean_skill_weights = scaled_weights.mean(-1)[1]
+        mean_skill_weights = scaled_weights.mean(-1)[1] #+1e-4
         # print(weights[0,:,0])#,scaled_weights[0])
         self.visualize_weights = (mean_skill_weights/mean_skill_weights.sum()).tolist()
         # print(self.visualize_weights)        
@@ -274,15 +282,16 @@ class MultiSkillActorCriticSplit(nn.Module):
         skill_outputs = {name:branch(self.select_obs_actor(aug_observations, name)) for name, branch in self.actor.items()}
         # skill_means_std = [torch.split(output,self.num_actions,dim=1) for output in skill_outputs]
         weights = {name:weight_net(self.select_obs_weights(aug_observations, name)) for name, weight_net in self.weights.items()}
-        doorv2_weights_, doorv2_target_reach_synth_obs = torch.split(weights["door_openv2"], [7,2],dim=1)
-        doorv2_target_reach_aug_obs = torch.cat([observations, nn.functional.normalize(doorv2_target_reach_synth_obs)],dim=1)
-        doorv2_weights = nn.functional.softmax(doorv2_weights_,dim=1)
-        weights["door_openv2"] = doorv2_weights
+        if "door_openv2" in weights.keys():
+            doorv2_weights_, doorv2_target_reach_synth_obs = torch.split(weights["door_openv2"], [7,2],dim=1)
+            doorv2_target_reach_aug_obs = torch.cat([observations, nn.functional.normalize(doorv2_target_reach_synth_obs)],dim=1)
+            doorv2_weights = nn.functional.softmax(doorv2_weights_,dim=1)
+            weights["door_openv2"] = doorv2_weights
         skill_means, skill_std = [], []
         for skill_name, compositions_list in self.skill_compositions.items():
             if skill_name in self.weight_branches.keys(): # this skill has multiple branches which should be combined
                 if skill_name == "door_openv2":
-                    target_chosen_skill_outputs = [skill_outputs[skill_] for skill_ in compositions_list[:4]]
+                    target_chosen_skill_outputs = [skill_outputs[skill_] for skill_ in compositions_list[:5]]
                     target_reach_weights = self.weights["target_reach"](self.select_obs_weights(doorv2_target_reach_aug_obs, "target_reach"))
                     mean_target_chosen_skill_outputs, std_target_chosen_skill_outputs = zip(*target_chosen_skill_outputs)    
                     
@@ -303,7 +312,7 @@ class MultiSkillActorCriticSplit(nn.Module):
                 # if skill_name == "residual":
                     # print(mean[0],std[0])
                     # std = std*0+10
-                    # mean = mean*0
+                    # mean = mean
             skill_means.append(mean)
             skill_std.append(std)   
         # skill_means, skill_std = zip(*skill_outputs)
@@ -433,7 +442,7 @@ class MultiSkillActorCriticSplit(nn.Module):
             skill_std.append(std)   
         # skill_means, skill_std = zip(*skill_outputs)
         self.std = torch.stack(skill_std, 1)
-        self.residual_action_magnitude = torch.norm(skill_means[-1],p=2,dim=1).mean()
+        self.residual_action_magnitude = torch.norm(skill_means[-1],p=1,dim=1).mean()
         # print(self.residual_action)
         # print(self.residual_action_magnitude)
         # self.std = self.get_std_from_logstd(log_std)

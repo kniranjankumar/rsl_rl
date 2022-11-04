@@ -204,6 +204,7 @@ class MultiSkillActorCriticv3(nn.Module):
         # weights, synth_obs = torch.split(self.meta_backbone(observations), [self.num_skills, self.synthetic_obs_size*2], dim=1)
         weights, synth_obs = torch.split(self.meta_backbone(observations), [self.num_skills, self.synthetic_obs_size], dim=1)
         self.residual_weights = weights[:,-1]
+        self.residual_weights_ = torch.abs(weights[:,-1]).mean()
         # print(synth_obs.size())
         # self.synth_obs_distribution = Normal(synth_obs[:, :self.synthetic_obs_size], 1e-3 + nn.functional.relu(synth_obs[:, self.synthetic_obs_size:]))
         # synth_obs = self.synth_obs_distribution.sample()
@@ -245,10 +246,12 @@ class MultiSkillActorCriticv3(nn.Module):
         skill_outputs = {name:branch(self.select_obs_actor(aug_observations, name)) for name, branch in self.actor.items()}
         # skill_means_std = [torch.split(output,self.num_actions,dim=1) for output in skill_outputs]
         weights = {name:weight_net(self.select_obs_weights(aug_observations, name)) for name, weight_net in self.weights.items()}
-        doorv2_weights_, doorv2_target_reach_synth_obs = torch.split(weights["door_openv2"], [7,2],dim=1)
-        doorv2_target_reach_aug_obs = torch.cat([observations, nn.functional.normalize(doorv2_target_reach_synth_obs)],dim=1)
-        doorv2_weights = nn.functional.softmax(doorv2_weights_,dim=1)
-        weights["door_openv2"] = doorv2_weights
+
+        if "door_openv2" in weights.keys():
+            doorv2_weights_, doorv2_target_reach_synth_obs = torch.split(weights["door_openv2"], [7,2],dim=1)
+            doorv2_target_reach_aug_obs = torch.cat([observations, nn.functional.normalize(doorv2_target_reach_synth_obs)],dim=1)
+            doorv2_weights = nn.functional.softmax(doorv2_weights_,dim=1)
+            weights["door_openv2"] = doorv2_weights
         skill_means, skill_std = [], []
         for skill_name, compositions_list in self.skill_compositions.items():
             if skill_name in self.weight_branches.keys(): # this skill has multiple branches which should be combined

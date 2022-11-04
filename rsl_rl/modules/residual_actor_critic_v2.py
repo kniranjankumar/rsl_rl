@@ -169,6 +169,7 @@ class ResidualActorCritic(nn.Module):
         # skill_std = torch.unbind(std,1)
         # skill_std = torch.ReLU(skill_std)
         weights = self.weights(observations)
+        self.residual_weights_ = torch.abs(weights[:,-1]).mean()
         self.instance_weights = weights
         # print("                     ",weights[0])
         combined_mean, combined_std = self.combine_skills(torch.stack(skill_means,1), self.std, torch.stack(self.num_actions*[weights], dim=-1))
