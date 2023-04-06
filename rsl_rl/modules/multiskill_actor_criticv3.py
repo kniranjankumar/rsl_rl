@@ -229,9 +229,11 @@ class MultiSkillActorCriticv3(nn.Module):
         # scaled_weights = nn.functional.softmax(weights)/stds
         stds = stds+1e-2
         scaled_weights = weights/stds #+ 1e-2
-        mean_skill_weights = scaled_weights.mean(-1)[0]
+        mean_skill_weights = scaled_weights.mean(-1)
         
-        self.visualize_weights = (mean_skill_weights/mean_skill_weights.sum()).tolist()
+        self.visualize_weights = (mean_skill_weights[0]/mean_skill_weights[0].sum()).tolist()
+        self.all_weights = (mean_skill_weights/mean_skill_weights.sum(-1).unsqueeze(1))
+        
         # print(scaled_weights.max(), scaled_weights.min(), stds.max(), stds.min(), nn.functional.softmax(self.weights))
         combined_std = 1/scaled_weights.sum(dim=1) 
         combined_mean = combined_std *(means*scaled_weights).sum(dim=1)

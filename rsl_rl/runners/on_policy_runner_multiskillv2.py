@@ -90,7 +90,7 @@ class MultiSkillOnPolicyRunnerv2(OnPolicyRunner):
         self.alg.actor_critic.eval() # switch to evaluation mode (dropout for example)
         if device is not None:
             self.alg.actor_critic.to(device)
-        return self.alg.actor_critic.act
+        return self.alg.actor_critic.act_inference
     
     # def load(self, path, load_optimizer=True):
     #     loaded_dict = torch.load(path)
@@ -143,8 +143,13 @@ class MultiSkillOnPolicyRunnerv2(OnPolicyRunner):
                 for parms in self.alg.actor_critic.weights[skill_name].parameters():
                     parms.requires_grad = False
         for parms in self.alg.actor_critic.actor["residual"].parameters():
-            parms.requires_grad = False 
-
+            parms.requires_grad = True 
+        print("number of parameters", sum(p.numel() for p in self.alg.actor_critic.actor.parameters()))
+        print("number of parameters", sum(p.numel() for p in self.alg.actor_critic.weights.parameters()))
+        print("number of parameters", sum(p.numel() for p in self.alg.actor_critic.meta_backbone.parameters()))
+        print("number of parameters", sum(p.numel() for p in self.alg.actor_critic.synth_obs_net.parameters()))
+        
+        
         # weight_init= len(paths)*[1/len(paths)-0.2]+ (len(self.alg.actor_critic.actor)-len(paths))*[0.01] # this sums up to 1, but may not be necessary
         # self.alg.actor_critic.weights.data = torch.tensor(weight_init, device=self.device)
         return loaded_dict['infos']

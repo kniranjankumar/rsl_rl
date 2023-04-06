@@ -264,9 +264,10 @@ class MultiSkillActorCriticSplit(nn.Module):
         # scaled_weights = nn.functional.softmax(weights)/stds
         stds = stds+1e-2
         scaled_weights = weights/stds #+ 1e-2
-        mean_skill_weights = scaled_weights.mean(-1)[1] #+1e-4
+        mean_skill_weights = scaled_weights.mean(-1) #+1e-4
         # print(weights[0,:,0])#,scaled_weights[0])
-        self.visualize_weights = (mean_skill_weights/mean_skill_weights.sum()).tolist()
+        self.visualize_weights = (mean_skill_weights[0]/mean_skill_weights[0].sum()).tolist()
+        self.all_weights = (mean_skill_weights/mean_skill_weights.sum(-1).unsqueeze(1))
         # print(self.visualize_weights)        
         # print(scaled_weights.max(), scaled_weights.min(), stds.max(), stds.min(), nn.functional.softmax(self.weights))
         combined_std = 1/scaled_weights.sum(dim=1) 
@@ -420,7 +421,7 @@ class MultiSkillActorCriticSplit(nn.Module):
         for skill_name, compositions_list in self.skill_compositions.items():
             if skill_name in self.weight_branches.keys(): # this skill has multiple branches which should be combined
                 if skill_name == "door_openv2":
-                    target_chosen_skill_outputs = [skill_outputs[skill_] for skill_ in compositions_list[:4]]
+                    target_chosen_skill_outputs = [skill_outputs[skill_] for skill_ in compositions_list[:5]]
                     target_reach_weights = self.weights["target_reach"](self.select_obs_weights(doorv2_target_reach_aug_obs, "target_reach"))
                     mean_target_chosen_skill_outputs, std_target_chosen_skill_outputs = zip(*target_chosen_skill_outputs)    
                     
@@ -438,8 +439,13 @@ class MultiSkillActorCriticSplit(nn.Module):
             else:
                 mean = skill_outputs[skill_name][0]
                 std = skill_outputs[skill_name][1]
+                # if skill_name == "residual":
+                    # print(mean[0],std[0])
+                    # std = std*0+10
+                    # mean = mean
             skill_means.append(mean)
             skill_std.append(std)   
+        # skill_means, skill_std = zip(*skill_outputs)
         # skill_means, skill_std = zip(*skill_outputs)
         self.std = torch.stack(skill_std, 1)
         self.residual_action_magnitude = torch.norm(skill_means[-1],p=1,dim=1).mean()
