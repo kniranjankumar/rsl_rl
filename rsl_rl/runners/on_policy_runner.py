@@ -80,6 +80,30 @@ class OnPolicyRunner:
 
         _, _ = self.env.reset()
     
+    def evaluate(self,num_learning_iterations=1000):
+        obs = self.env.get_observations()
+        privileged_obs = self.env.get_privileged_observations()
+        critic_obs = privileged_obs if privileged_obs is not None else obs
+        obs, critic_obs = obs.to(self.device), critic_obs.to(self.device)
+        self.alg.actor_critic.train() # switch to train mode (for dropout for example)
+
+        ep_infos = []
+        rewbuffer = deque(maxlen=100)
+        lenbuffer = deque(maxlen=100)
+        cur_reward_sum = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
+        cur_episode_length = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
+
+        tot_iter = self.current_learning_iteration + num_learning_iterations
+        for it in range(self.current_learning_iteration, tot_iter):
+            start = time.time()
+            # Rollout
+            with torch.inference_mode():
+                for i in range(self.num_steps_per_env):
+                    actions = self.alg.act(obs, critic_obs)
+                    obs, privileged_obs, rewards, dones, infos = self.env.step(actions)
+                    critic_obs = privileged_obs if privileged_obs is not None else obs
+                    obs, critic_obs, rewards, dones = obs.to(self.device), critic_obs.to(self.device), rewards.to(self.device), dones.to(self.device)
+                
     def learn(self, num_learning_iterations, init_at_random_ep_len=False):
         # initialize writer
         if self.log_dir is not None and self.writer is None:
@@ -137,12 +161,13 @@ class OnPolicyRunner:
             if self.log_dir is not None:
                 self.log(locals())
             if it % self.save_interval == 0:
-                self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(it)))
+                print('Saving model at it', it)
+                self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(it)),{"it":it})
             ep_infos.clear()
         
         self.current_learning_iteration += num_learning_iterations
         self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(self.current_learning_iteration)))
-
+        return rewbuffer
 
     def log(self, locs, width=80, pad=35):
         self.tot_timesteps += self.num_steps_per_env * self.env.num_envs
@@ -211,13 +236,19 @@ class OnPolicyRunner:
                        f"""{'Total time:':>{pad}} {self.tot_time:.2f}s\n"""
                        f"""{'ETA:':>{pad}} {self.tot_time / (locs['it'] + 1) * (
                                locs['num_learning_iterations'] - locs['it']):.1f}s\n""")
-        print(log_string)
+        if locs['it']%1000 == 0:
+            print(log_string)
 
     def save(self, path, infos=None):
+        print("saving_iteration", self.current_learning_iteration)
+        if infos:
+            iter = infos['it']
+        else:
+            iter = self.current_learning_iteration
         torch.save({
             'model_state_dict': self.alg.actor_critic.state_dict(),
             'optimizer_state_dict': self.alg.optimizer.state_dict(),
-            'iter': self.current_learning_iteration,
+            'iter': iter,
             'infos': infos,
             }, path)
 
@@ -227,6 +258,7 @@ class OnPolicyRunner:
         # print("number of parameters", sum(p.numel() for p in self.alg.actor_critic.actor.parameters()))
         if load_optimizer:
             self.alg.optimizer.load_state_dict(loaded_dict['optimizer_state_dict'])
+        print("loading_iteration", loaded_dict['iter'])
         self.current_learning_iteration = loaded_dict['iter']
         return loaded_dict['infos']
 
